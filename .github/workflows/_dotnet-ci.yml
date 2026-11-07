@@ -1,0 +1,177 @@
+# =============================================================================
+# Reusable: .NET service CI — pull-request quality gate
+# =============================================================================
+# A PURE QUALITY GATE. It builds, tests, analyses and scans. It produces no image
+# and touches no cluster, and it holds NO cloud credentials — a pull request from
+# a fork must never be able to reach Azure. Delivery is the CD workflow's job,
+# and that only runs on a push to main.
+#
+# WHY A REUSABLE WORKFLOW rather than one copy per service: the earlier platform
+# carried a full copy of this file for each service. Six copies drift — a fix to
+# the Sonar invocation or an action version bump has to be made six times, and
+# the one that gets missed is the one nobody notices. Here the logic lives once
+# and each service contributes a caller of about twenty lines.
+#
+# The path FILTERS cannot live here. A reusable workflow has no `on: pull_request`
+# of its own, so each caller declares which paths trigger it — which is right
+# anyway, since those paths are the one genuinely per-service thing.
+#
+# JOB NAMES ARE FIXED on purpose. GitHub matches required status checks by job
+# name, so build-test / sonar / trivy let the SAME three required checks apply
+# uniformly to every service's PR. A differently-named job would leave a required
+# check permanently "Expected" and block the merge forever.
+
+on:
+  workflow_call:
+    inputs:
+      service_name:
+        description: 'Short service name, used in log output only (e.g. catalogue).'
+        required: true
+        type: string
+      service_path:
+        description: 'Top-level service folder, scanned by Trivy (e.g. AK.Catalogue).'
+        required: true
+        type: string
+      project:
+        description: 'The deployable .csproj to build.'
+        required: true
+        type: string
+      test_project:
+        description: 'The test .csproj. Leave empty for a service with no test project — the build still runs, and sonar runs without a coverage report.'
+        required: false
+        type: string
+        default: ''
+      dockerfile:
+        description: 'Dockerfile to scan for misconfiguration.'
+        required: true
+        type: string
+    secrets:
+      SONAR_TOKEN:
+        required: true
+
+permissions:
+  contents: read
+
+env:
+  DOTNET_VERSION: '9.0.x'
+  SONAR_ORG: 'seesathish'
+  SONAR_PROJECT_KEY: 'seesathish_AntKart-Src5'
+  TRIVY_SEVERITY: 'HIGH,CRITICAL'
+  BUILDING_BLOCKS_TESTS: 'AK.BuildingBlocks/AK.BuildingBlocks.Tests/AK.BuildingBlocks.Tests.csproj'
+
+jobs:
+  build-test:
+    name: build-test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Set up .NET ${{ env.DOTNET_VERSION }}
+        uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4.3.1
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+
+      # Restore from the repo root so the root nuget.config is picked up. It
+      # clears inherited package sources, which a machine-level private feed
+      # would otherwise add and then 401 on.
+      - name: Restore
+        run: dotnet restore "${{ inputs.project }}"
+
+      - name: Build (Release)
+        run: dotnet build "${{ inputs.project }}" -c Release --no-restore
+
+      - name: Test
+        if: inputs.test_project != ''
+        run: dotnet test "${{ inputs.test_project }}" -c Release
+
+  sonar:
+    name: sonar
+    runs-on: ubuntu-latest
+    needs: build-test
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          # Full history: Sonar needs it to attribute "new code" to the right
+          # commits. A shallow clone makes every line look new.
+          fetch-depth: 0
+
+      - name: Set up .NET ${{ env.DOTNET_VERSION }}
+        uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4.3.1
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+
+      - name: Set up Java (for the Sonar scanner)
+        uses: actions/setup-java@c1e323688fd81a25caa38c78aa6df2d33d3e20d9 # v4.8.0
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Cache SonarCloud packages
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ~/.sonar/cache
+          key: ${{ runner.os }}-sonar
+          restore-keys: ${{ runner.os }}-sonar
+
+      - name: Install dotnet-sonarscanner
+        run: dotnet tool install --global dotnet-sonarscanner
+
+      - name: SonarCloud analyze
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        run: |
+          export PATH="$PATH:$HOME/.dotnet/tools"
+          dotnet sonarscanner begin \
+            /k:"${{ env.SONAR_PROJECT_KEY }}" \
+            /o:"${{ env.SONAR_ORG }}" \
+            /d:sonar.token="$SONAR_TOKEN" \
+            /d:sonar.host.url="https://sonarcloud.io" \
+            /d:sonar.cs.opencover.reportsPaths="**/coverage.opencover.xml" \
+            /d:sonar.coverage.exclusions="**/Program.cs,**/Logging/SerilogExtensions.cs,**/Observability/OpenTelemetryExtensions.cs"
+
+          dotnet build "${{ inputs.project }}" -c Release
+
+          if [ -n "${{ inputs.test_project }}" ]; then
+            dotnet test "${{ inputs.test_project }}" -c Release --no-build \
+              --collect:"XPlat Code Coverage;Format=opencover" --results-directory ./coverage
+          fi
+
+          # The shared library's own tests, run here because no per-service job
+          # otherwise covers them — without this, BuildingBlocks code (middleware,
+          # auth helpers) reports 0% coverage on new code in every pull request.
+          dotnet build "${{ env.BUILDING_BLOCKS_TESTS }}" -c Release
+          dotnet test "${{ env.BUILDING_BLOCKS_TESTS }}" -c Release --no-build \
+            --collect:"XPlat Code Coverage;Format=opencover" --results-directory ./coverage
+
+          dotnet sonarscanner end /d:sonar.token="$SONAR_TOKEN"
+
+  trivy:
+    name: trivy
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      # Scans dependencies, committed secrets and misconfiguration. The secret
+      # scanner matters more than usual in this repository: the whole design
+      # claims there are no stored credentials, and this is what keeps that claim
+      # honest as code is added.
+      - name: Trivy filesystem scan (${{ inputs.service_name }})
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: 'fs'
+          scan-ref: ${{ inputs.service_path }}
+          scanners: 'vuln,secret,misconfig'
+          severity: ${{ env.TRIVY_SEVERITY }}
+          exit-code: '1'
+          ignore-unfixed: 'false'
+
+      - name: Trivy Dockerfile scan (${{ inputs.service_name }})
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: 'config'
+          scan-ref: ${{ inputs.dockerfile }}
+          severity: ${{ env.TRIVY_SEVERITY }}
+          exit-code: '1'

@@ -61,17 +61,17 @@ hallucinated action rejected by schema validation.
 
 | Component | Status | Notes |
 |---|---|---|
-| Azure platform (Terraform/Terragrunt, AKS, Argo CD) | 🔴 Not started | Adapt from the earlier AntKart repo |
-| Environment lifecycle pipelines (up/down/stop/start) | 🔴 Not started | Project-prefix input (D8) |
-| Five .NET services (Gateway, Users, Catalogue, Cart, Orders) | 🔴 Not started | System of record |
+| Azure platform (Terraform/Terragrunt, AKS, Argo CD) | 🟡 Code in place | 12 modules + 12 units adapted and parameterised; **never run against Azure** |
+| Environment lifecycle pipelines (up/down/stop/start) | 🔴 Not started | Project-prefix input (D8). New work — the earlier repo was run by hand |
+| Five .NET services (Gateway, Users, Catalogue, Cart, Orders) | 🔴 Not started | System of record. Helm values, Argo CD elements and CI/CD callers already exist, dormant |
 | Identity (Entra app reg, workload identity, propagation) | 🔴 Not started | The central security demo (D5) |
-| Retrieval (ingestion, embeddings, Azure AI Search, identity filtering) | 🔴 Not started | Two corpora |
+| Retrieval (ingestion, embeddings, Azure AI Search, identity filtering) | 🔴 Not started | Two corpora. The `ai-search` module is new work (P0-6) |
 | MCP server (.NET, typed tools) | 🔴 Not started | The runtime boundary (D2) |
 | Python orchestrator (LangGraph supervisor + 4 agents) | 🔴 Not started | Supervisor pattern (D1) |
 | HITL gate + bounded autonomy | 🔴 Not started | D6, D7 |
 | Negative cases | 🔴 Not started | D10 — first-class |
 | Observability, evaluation, cost | 🔴 Not started | One trace across both runtimes |
-| Documentation + articles | 🔴 Not started | Phases 5–6 |
+| Documentation + articles | 🟡 Started | README, `infrastructure/README.md`, `deploy/README.md` and `CLAUDE.md` written. Guides, ADRs and diagrams are Phase 5 |
 
 ## Constraints
 
@@ -85,10 +85,14 @@ hallucinated action rejected by schema validation.
 
 ## What reusable assets exist
 
-**Terraform and Terragrunt modules, the Helm chart, the Argo CD setup, and the GitHub
-Actions workflows** can be **adapted from the earlier AntKart repository** rather than
-written from scratch — renamed and parameterised by project prefix (D8). This is where most
-of Phase 0–1 time is saved.
+**Already moved in** (7 Nov 2026) from the earlier AntKart repository: `AK.BuildingBlocks`
+(minus messaging and email), 12 Terraform modules and 12 Terragrunt units, the generic Helm
+chart, the Argo CD AppProject and ApplicationSet, the cert-manager issuers, and the CI/CD
+workflows — restructured into three reusable workflows plus fourteen thin callers. See the
+*Changed plan* entry in [BACKLOG.md](BACKLOG.md) for what was dropped and why.
+
+**Still new work**, not adaptable: the `ai-search` and `openai` modules, the environment
+lifecycle pipelines, the MCP server, and everything Python.
 
 ## How to work on this
 

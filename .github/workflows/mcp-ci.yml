@@ -1,0 +1,42 @@
+# =============================================================================
+# MCP CI
+# =============================================================================
+# A thin caller. All the logic lives in _dotnet-ci.yml — see that file for why.
+#
+# MCP SPECIFICS:
+# The typed-tool contract (D2) is asserted here. A schema that accepts what it
+# should reject is how a hallucinated action reaches a real service.
+
+name: MCP CI
+
+on:
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'AK.Mcp/**'
+      - 'AK.BuildingBlocks/**'
+      - 'nuget.config'
+      - '.github/workflows/mcp-ci.yml'
+      - '.github/workflows/_dotnet-ci.yml'
+      # Documentation-only changes do not trigger the gate. The negation must be
+      # LAST — in GitHub Actions path filters, later patterns win.
+      - '!**/*.md'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mcp-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ci:
+    uses: ./.github/workflows/_dotnet-ci.yml
+    with:
+      service_name: mcp
+      service_path: AK.Mcp
+      project: AK.Mcp/AK.Mcp.Server/AK.Mcp.Server.csproj
+      test_project: 'AK.Mcp/AK.Mcp.Tests/AK.Mcp.Tests.csproj'
+      dockerfile: AK.Mcp/AK.Mcp.Server/Dockerfile
+    secrets:
+      SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}

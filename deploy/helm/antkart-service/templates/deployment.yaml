@@ -1,0 +1,101 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "antkart-service.name" . }}
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "antkart-service.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "antkart-service.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        # SYNCED IS NOT RUNNING. A ConfigMap change does NOT restart the pods that
+        # consume it: Kubernetes updates the ConfigMap object and the Deployment's
+        # own spec is untouched, so there is nothing for it to roll. Argo CD
+        # reports the Application as Synced while every pod still holds the OLD
+        # configuration — the most convincing wrong-but-green state in GitOps.
+        #
+        # Hashing the rendered ConfigMaps into a pod annotation changes the POD
+        # TEMPLATE whenever the configuration changes, which is what actually
+        # triggers a rolling update.
+        checksum/config-env: {{ include (print $.Template.BasePath "/configmap-env.yaml") . | sha256sum }}
+        {{- if .Values.ocelot.enabled }}
+        checksum/config-ocelot: {{ include (print $.Template.BasePath "/configmap-ocelot.yaml") . | sha256sum }}
+        {{- end }}
+      labels:
+        {{- include "antkart-service.selectorLabels" . | nindent 8 }}
+        # REQUIRED by the workload-identity webhook — it only injects the token +
+        # AZURE_* env vars into pods carrying this label. Must be on the POD template.
+        azure.workload.identity/use: "true"
+    spec:
+      serviceAccountName: {{ include "antkart-service.name" . }}
+      {{- with .Values.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: {{ .Values.serviceName }}
+          image: {{ include "antkart-service.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          {{- with .Values.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          ports:
+            - name: {{ .Values.service.portName }}
+              containerPort: {{ .Values.containerPort }}
+              protocol: TCP
+          {{- if .Values.env }}
+          envFrom:
+            - configMapRef:
+                name: {{ include "antkart-service.name" . }}-env
+          {{- end }}
+          # EVERY workload here — the five .NET services, the .NET MCP server and the
+          # PYTHON orchestrator — serves the same three health paths over HTTP/1.1.
+          # That shared contract is why one chart deploys both runtimes: the chart
+          # knows nothing about what language is inside the container.
+          #
+          # startupProbe gates liveness and readiness, so a slow boot (Key Vault
+          # load, model client warm-up) never trips a restart. Liveness is shallow
+          # /health/live, so a dependency blip cannot cause a restart storm;
+          # readiness is tolerant /health/ready, so Degraded still returns 200 and
+          # a shared-dependency wobble cannot black out the whole fleet.
+          startupProbe:
+            httpGet:
+              path: /health/live
+              port: {{ .Values.containerPort }}
+            periodSeconds: {{ .Values.probes.startup.periodSeconds }}
+            failureThreshold: {{ .Values.probes.startup.failureThreshold }}
+          livenessProbe:
+            httpGet:
+              path: /health/live
+              port: {{ .Values.containerPort }}
+            periodSeconds: {{ .Values.probes.liveness.periodSeconds }}
+            timeoutSeconds: {{ .Values.probes.liveness.timeoutSeconds }}
+            failureThreshold: {{ .Values.probes.liveness.failureThreshold }}
+          readinessProbe:
+            httpGet:
+              path: /health/ready
+              port: {{ .Values.containerPort }}
+            periodSeconds: {{ .Values.probes.readiness.periodSeconds }}
+            timeoutSeconds: {{ .Values.probes.readiness.timeoutSeconds }}
+            failureThreshold: {{ .Values.probes.readiness.failureThreshold }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          {{- if .Values.ocelot.enabled }}
+          volumeMounts:
+            - name: ocelot-config
+              mountPath: /app/ocelot.json
+              subPath: ocelot.json
+              readOnly: true
+          {{- end }}
+      {{- if .Values.ocelot.enabled }}
+      volumes:
+        - name: ocelot-config
+          configMap:
+            name: {{ include "antkart-service.name" . }}-ocelot
+      {{- end }}

@@ -1,0 +1,42 @@
+# =============================================================================
+# Users CI
+# =============================================================================
+# A thin caller. All the logic lives in _dotnet-ci.yml — see that file for why.
+#
+# USERS SPECIFICS:
+# The ownership checks this service enforces are the subject of the cross-user
+# negative case (D10), so its test suite is the one that must not go thin.
+
+name: Users CI
+
+on:
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'AK.Users/**'
+      - 'AK.BuildingBlocks/**'
+      - 'nuget.config'
+      - '.github/workflows/users-ci.yml'
+      - '.github/workflows/_dotnet-ci.yml'
+      # Documentation-only changes do not trigger the gate. The negation must be
+      # LAST — in GitHub Actions path filters, later patterns win.
+      - '!**/*.md'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: users-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ci:
+    uses: ./.github/workflows/_dotnet-ci.yml
+    with:
+      service_name: users
+      service_path: AK.Users
+      project: AK.Users/AK.Users.API/AK.Users.API.csproj
+      test_project: 'AK.Users/AK.Users.Tests/AK.Users.Tests.csproj'
+      dockerfile: AK.Users/AK.Users.API/Dockerfile
+    secrets:
+      SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}

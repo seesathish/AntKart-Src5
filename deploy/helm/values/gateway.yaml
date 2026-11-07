@@ -1,0 +1,184 @@
+# AK.Gateway — Ocelot API gateway. The single public entry point.
+#
+# It does two jobs. It validates the caller's Entra token at the edge, and it
+# routes: the four domain services for ordinary REST traffic, and the
+# orchestrator for anything that should go through the agent loop.
+#
+# The gateway does NOT decide what a caller may see. It establishes WHO the
+# caller is and passes their token onward unchanged; each service re-validates it
+# and enforces its own access control (D5). A gateway that stripped the token and
+# called downstream with its own identity would make every service blind to the
+# user — and would make the cross-user negative case pass.
+name: ak-gateway
+serviceName: gateway
+
+# Ingress — the gateway is the only workload exposed externally. `enabled` stays
+# false here so a plain `helm install` cannot create an Ingress before the
+# controller exists; the gateway's Argo CD Application turns it on and supplies
+# the host.
+ingress:
+  enabled: false
+  className: nginx
+  path: /
+  pathType: Prefix
+  # Let's Encrypt PRODUCTION has strict rate limits, and a failed issuance loop
+  # can lock the account out for a week. Validate the whole flow on STAGING
+  # first, then switch this to letsencrypt-prod for the real host.
+  clusterIssuer: letsencrypt-staging
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-body-size: "10m"
+    # AN AGENT RUN IS NOT A REST CALL. A supervisor that routes to two specialist
+    # agents, each making a retrieval call and a model call, takes tens of
+    # seconds — nginx's 60s default would cut the connection mid-run and the user
+    # would see a 504 for work that was about to succeed. 180s here gives the
+    # bounded run (D7: step cap, token budget) room to finish or to stop on its
+    # own terms. The ceiling that matters is the step cap, not the socket.
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "180"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "180"
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+
+# ocelot.json is mounted from a ConfigMap over /app/ocelot.json, so a routing
+# change is a values edit and a sync — no image rebuild. Downstream hosts are the
+# in-cluster ak-* Service names on port 8080.
+ocelot:
+  enabled: true
+  config:
+    Routes:
+      # --- The agent entry point ------------------------------------------
+      # Everything conversational enters here. Note the QoS numbers differ from
+      # every other route below, and that is the point: an agent run is slow and
+      # expensive, so it gets a long timeout and a tight rate limit, while the
+      # plain REST routes get the opposite.
+      - UpstreamPathTemplate: "/gateway/agent/{everything}"
+        UpstreamHttpMethod: ["GET", "POST"]
+        DownstreamPathTemplate: "/agent/{everything}"
+        DownstreamScheme: "http"
+        DownstreamHostAndPorts:
+          - {Host: "ak-orchestrator", Port: 8080}
+        AuthenticationOptions: {AuthenticationProviderKey: "Bearer"}
+        # 2 requests/second per caller. An agent call costs model tokens, so the
+        # limit here is a COST control as much as a load control.
+        RateLimitOptions: {EnableRateLimiting: true, Period: "1s", PeriodTimespan: 1, Limit: 2}
+        # 170s, just inside the ingress's 180s, so the gateway gives up first and
+        # returns a clean error instead of nginx severing the connection.
+        QoSOptions: {ExceptionsAllowedBeforeBreaking: 3, DurationOfBreak: 30000, TimeoutValue: 170000}
+
+      # --- Catalogue ------------------------------------------------------
+      - UpstreamPathTemplate: "/gateway/catalogue/{everything}"
+        UpstreamHttpMethod: ["GET", "POST", "PUT", "DELETE"]
+        DownstreamPathTemplate: "/api/v1/catalogue/{everything}"
+        DownstreamScheme: "http"
+        DownstreamHostAndPorts:
+          - {Host: "ak-catalogue", Port: 8080}
+        AuthenticationOptions: {AuthenticationProviderKey: "Bearer"}
+        RateLimitOptions: {EnableRateLimiting: true, Period: "1s", PeriodTimespan: 1, Limit: 20}
+        QoSOptions: {ExceptionsAllowedBeforeBreaking: 5, DurationOfBreak: 30000, TimeoutValue: 10000}
+      - UpstreamPathTemplate: "/gateway/catalogue"
+        UpstreamHttpMethod: ["GET", "POST"]
+        DownstreamPathTemplate: "/api/v1/catalogue"
+        DownstreamScheme: "http"
+        DownstreamHostAndPorts:
+          - {Host: "ak-catalogue", Port: 8080}
+        AuthenticationOptions: {AuthenticationProviderKey: "Bearer"}
+        RateLimitOptions: {EnableRateLimiting: true, Period: "1s", PeriodTimespan: 1, Limit: 20}
+        QoSOptions: {ExceptionsAllowedBeforeBreaking: 5, DurationOfBreak: 30000, TimeoutValue: 10000}
+
+      # --- Cart -----------------------------------------------------------
+      - UpstreamPathTemplate: "/gateway/cart/{everything}"
+        UpstreamHttpMethod: ["GET", "POST", "PUT", "DELETE"]
+        DownstreamPathTemplate: "/api/v1/cart/{everything}"
+        DownstreamScheme: "http"
+        DownstreamHostAndPorts:
+          - {Host: "ak-cart", Port: 8080}
+        AuthenticationOptions: {AuthenticationProviderKey: "Bearer"}
+        RateLimitOptions: {EnableRateLimiting: true, Period: "1s", PeriodTimespan: 1, Limit: 10}
+        QoSOptions: {ExceptionsAllowedBeforeBreaking: 3, DurationOfBreak: 30000, TimeoutValue: 10000}
+      - UpstreamPathTemplate: "/gateway/cart"
+        UpstreamHttpMethod: ["GET", "POST", "DELETE"]
+        DownstreamPathTemplate: "/api/v1/cart"
+        DownstreamScheme: "http"
+        DownstreamHostAndPorts:
+          - {Host: "ak-cart", Port: 8080}
+        AuthenticationOptions: {AuthenticationProviderKey: "Bearer"}
+        RateLimitOptions: {EnableRateLimiting: true, Period: "1s", PeriodTimespan: 1, Limit: 10}
+        QoSOptions: {ExceptionsAllowedBeforeBreaking: 3, DurationOfBreak: 30000, TimeoutValue: 10000}
+
+      # --- Orders ---------------------------------------------------------
+      - UpstreamPathTemplate: "/gateway/orders/{everything}"
+        UpstreamHttpMethod: ["GET", "POST", "PUT", "DELETE"]
+        DownstreamPathTemplate: "/api/v1/orders/{everything}"
+        DownstreamScheme: "http"
+        DownstreamHostAndPorts:
+          - {Host: "ak-orders", Port: 8080}
+        AuthenticationOptions: {AuthenticationProviderKey: "Bearer"}
+        RateLimitOptions: {EnableRateLimiting: true, Period: "1s", PeriodTimespan: 1, Limit: 10}
+        QoSOptions: {ExceptionsAllowedBeforeBreaking: 3, DurationOfBreak: 30000, TimeoutValue: 10000}
+      - UpstreamPathTemplate: "/gateway/orders"
+        UpstreamHttpMethod: ["GET", "POST"]
+        DownstreamPathTemplate: "/api/v1/orders"
+        DownstreamScheme: "http"
+        DownstreamHostAndPorts:
+          - {Host: "ak-orders", Port: 8080}
+        AuthenticationOptions: {AuthenticationProviderKey: "Bearer"}
+        RateLimitOptions: {EnableRateLimiting: true, Period: "1s", PeriodTimespan: 1, Limit: 10}
+        QoSOptions: {ExceptionsAllowedBeforeBreaking: 3, DurationOfBreak: 30000, TimeoutValue: 10000}
+
+      # --- Users ----------------------------------------------------------
+      - UpstreamPathTemplate: "/gateway/users/{everything}"
+        UpstreamHttpMethod: ["GET", "PUT"]
+        DownstreamPathTemplate: "/api/v1/users/{everything}"
+        DownstreamScheme: "http"
+        DownstreamHostAndPorts:
+          - {Host: "ak-users", Port: 8080}
+        AuthenticationOptions: {AuthenticationProviderKey: "Bearer"}
+        RateLimitOptions: {EnableRateLimiting: true, Period: "1s", PeriodTimespan: 1, Limit: 20}
+        QoSOptions: {ExceptionsAllowedBeforeBreaking: 5, DurationOfBreak: 30000, TimeoutValue: 10000}
+
+      # --- Health passthrough ---------------------------------------------
+      # Unauthenticated on purpose: these are for checking that a service is up,
+      # and they expose no data. /health/live is shallow and makes no external
+      # calls, so it cannot be used to probe dependencies either.
+      - UpstreamPathTemplate: "/gateway/health/catalogue"
+        UpstreamHttpMethod: ["GET"]
+        DownstreamPathTemplate: "/health"
+        DownstreamScheme: "http"
+        DownstreamHostAndPorts:
+          - {Host: "ak-catalogue", Port: 8080}
+      - UpstreamPathTemplate: "/gateway/health/cart"
+        UpstreamHttpMethod: ["GET"]
+        DownstreamPathTemplate: "/health"
+        DownstreamScheme: "http"
+        DownstreamHostAndPorts:
+          - {Host: "ak-cart", Port: 8080}
+      - UpstreamPathTemplate: "/gateway/health/orders"
+        UpstreamHttpMethod: ["GET"]
+        DownstreamPathTemplate: "/health"
+        DownstreamScheme: "http"
+        DownstreamHostAndPorts:
+          - {Host: "ak-orders", Port: 8080}
+      - UpstreamPathTemplate: "/gateway/health/users"
+        UpstreamHttpMethod: ["GET"]
+        DownstreamPathTemplate: "/health"
+        DownstreamScheme: "http"
+        DownstreamHostAndPorts:
+          - {Host: "ak-users", Port: 8080}
+      - UpstreamPathTemplate: "/gateway/health/mcp"
+        UpstreamHttpMethod: ["GET"]
+        DownstreamPathTemplate: "/health"
+        DownstreamScheme: "http"
+        DownstreamHostAndPorts:
+          - {Host: "ak-mcp", Port: 8080}
+      - UpstreamPathTemplate: "/gateway/health/orchestrator"
+        UpstreamHttpMethod: ["GET"]
+        DownstreamPathTemplate: "/health"
+        DownstreamScheme: "http"
+        DownstreamHostAndPorts:
+          - {Host: "ak-orchestrator", Port: 8080}
+
+    GlobalConfiguration:
+      # Replaced with the external URL once the ingress host is set.
+      BaseUrl: "http://ak-gateway:8080"
+      RateLimitOptions:
+        DisableRateLimitHeaders: false
+        QuotaExceededMessage: "Rate limit exceeded. Please slow down."
+        HttpStatusCode: 429

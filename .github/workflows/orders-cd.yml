@@ -1,0 +1,35 @@
+# =============================================================================
+# Orders CD
+# =============================================================================
+# A thin caller. All the logic lives in _service-cd.yml — see that file for the
+# OIDC federation and the loop guard.
+#
+# Note what is NOT in the paths below: deploy/helm/values/**. That is the only
+# path this workflow writes to, and leaving it out is what stops the tag-bump
+# commit from re-triggering delivery.
+
+name: Orders CD
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'AK.Orders/**'
+      - 'AK.BuildingBlocks/**'
+      - 'nuget.config'
+      - '!**/*.md'
+
+concurrency:
+  group: orders-cd
+  cancel-in-progress: false
+
+jobs:
+  cd:
+    uses: ./.github/workflows/_service-cd.yml
+    with:
+      service_name: orders
+      image_repo: antkart/orders
+      dockerfile: AK.Orders/AK.Orders.API/Dockerfile
+      values_file: deploy/helm/values/orders.yaml
+    secrets:
+      CD_PUSH_TOKEN: ${{ secrets.CD_PUSH_TOKEN }}

@@ -1,0 +1,97 @@
+# =============================================================================
+# Reusable: Python CI — pull-request quality gate for the orchestrator
+# =============================================================================
+# The Python counterpart of _dotnet-ci.yml, and the same contract: build, check,
+# scan, no credentials, no cluster. Job names differ from the .NET gate because
+# the checks differ — a required status check should mean something, and "ruff
+# passed" is not "dotnet build passed".
+#
+# WHY THERE IS A SEPARATE GATE AT ALL rather than one polyglot workflow: an agent
+# orchestrator is where a type error costs the most. A supervisor that routes to
+# the wrong agent, or a tool schema whose Python model has drifted from the .NET
+# MCP contract, fails at RUNTIME inside a model call — slow, expensive, and the
+# error surfaces as a confused answer rather than a stack trace. Static checking
+# catches the class of bug that is hardest to catch any other way here.
+
+on:
+  workflow_call:
+    inputs:
+      service_path:
+        description: 'Top-level folder of the Python service (e.g. orchestrator).'
+        required: true
+        type: string
+      dockerfile:
+        description: 'Dockerfile to scan for misconfiguration.'
+        required: true
+        type: string
+      python_version:
+        required: false
+        type: string
+        default: '3.12'
+
+permissions:
+  contents: read
+
+env:
+  TRIVY_SEVERITY: 'HIGH,CRITICAL'
+
+jobs:
+  lint-type-test:
+    name: lint-type-test
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ${{ inputs.service_path }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Set up Python ${{ inputs.python_version }}
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: ${{ inputs.python_version }}
+
+      # Installed from the committed lock file, not resolved fresh. An agent stack
+      # moves fast: letting CI resolve its own versions means a green build today
+      # and a different dependency graph tomorrow, with no code change to blame.
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+
+      - name: Lint (ruff)
+        run: ruff check .
+
+      - name: Format check (ruff)
+        run: ruff format --check .
+
+      - name: Type check (mypy)
+        run: mypy .
+
+      - name: Test (pytest)
+        run: pytest -q
+
+  trivy:
+    name: trivy-python
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Trivy filesystem scan
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: 'fs'
+          scan-ref: ${{ inputs.service_path }}
+          scanners: 'vuln,secret,misconfig'
+          severity: ${{ env.TRIVY_SEVERITY }}
+          exit-code: '1'
+          ignore-unfixed: 'false'
+
+      - name: Trivy Dockerfile scan
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: 'config'
+          scan-ref: ${{ inputs.dockerfile }}
+          severity: ${{ env.TRIVY_SEVERITY }}
+          exit-code: '1'

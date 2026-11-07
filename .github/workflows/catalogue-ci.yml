@@ -1,0 +1,38 @@
+# =============================================================================
+# Catalogue CI
+# =============================================================================
+# A thin caller. All the logic lives in _dotnet-ci.yml — see that file for why.
+
+name: Catalogue CI
+
+on:
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'AK.Catalogue/**'
+      - 'AK.BuildingBlocks/**'
+      - 'nuget.config'
+      - '.github/workflows/catalogue-ci.yml'
+      - '.github/workflows/_dotnet-ci.yml'
+      # Documentation-only changes do not trigger the gate. The negation must be
+      # LAST — in GitHub Actions path filters, later patterns win.
+      - '!**/*.md'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: catalogue-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ci:
+    uses: ./.github/workflows/_dotnet-ci.yml
+    with:
+      service_name: catalogue
+      service_path: AK.Catalogue
+      project: AK.Catalogue/AK.Catalogue.API/AK.Catalogue.API.csproj
+      test_project: 'AK.Catalogue/AK.Catalogue.Tests/AK.Catalogue.Tests.csproj'
+      dockerfile: AK.Catalogue/AK.Catalogue.API/Dockerfile
+    secrets:
+      SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}

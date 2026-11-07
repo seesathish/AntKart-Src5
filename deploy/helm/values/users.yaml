@@ -1,0 +1,17 @@
+# AK.Users — user profile and the platform's authorization surface.
+#
+# There is no identity MICROSERVICE here: Entra issues tokens and every service
+# validates them. This service owns what Entra does not — the application's own
+# notion of a user (profile, preferences) and the ownership checks that decide
+# whether a caller may see a given record.
+#
+# It is the service the cross-user negative case is aimed at (D10): an agent that
+# has been talked into asking for someone else's data gets refused HERE, on the
+# caller's own token, not by the agent declining to ask.
+name: ak-users
+serviceName: users
+env:
+  # Vaulted as ConnectionStrings--UsersDb, projected to ConnectionStrings:UsersDb.
+  # Only the non-secret name appears in configuration; the value is read from Key
+  # Vault at startup with the pod's workload identity.
+  ConnectionStrings__UsersDb__SecretName: "ConnectionStrings--UsersDb"

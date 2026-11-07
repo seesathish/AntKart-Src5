@@ -1,0 +1,38 @@
+# =============================================================================
+# Cart CI
+# =============================================================================
+# A thin caller. All the logic lives in _dotnet-ci.yml — see that file for why.
+
+name: Cart CI
+
+on:
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'AK.Cart/**'
+      - 'AK.BuildingBlocks/**'
+      - 'nuget.config'
+      - '.github/workflows/cart-ci.yml'
+      - '.github/workflows/_dotnet-ci.yml'
+      # Documentation-only changes do not trigger the gate. The negation must be
+      # LAST — in GitHub Actions path filters, later patterns win.
+      - '!**/*.md'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cart-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ci:
+    uses: ./.github/workflows/_dotnet-ci.yml
+    with:
+      service_name: cart
+      service_path: AK.Cart
+      project: AK.Cart/AK.Cart.API/AK.Cart.API.csproj
+      test_project: 'AK.Cart/AK.Cart.Tests/AK.Cart.Tests.csproj'
+      dockerfile: AK.Cart/AK.Cart.API/Dockerfile
+    secrets:
+      SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}

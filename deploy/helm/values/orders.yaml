@@ -1,0 +1,15 @@
+# AK.Orders — order history and order placement.
+#
+# The HITL gate lives here (D6). Order placement is the irreversible action in
+# this platform, so the Orders agent PROPOSES a structured order and nothing is
+# committed until the user confirms it. The proposal is a first-class, persisted
+# thing rather than conversation state: an agent that holds a pending order only
+# in its own context loses it on restart, and a user who confirms "yes" against a
+# proposal the agent has silently re-derived is not confirming what they read.
+name: ak-orders
+serviceName: orders
+env:
+  ConnectionStrings__OrdersDb__SecretName: "ConnectionStrings--OrdersDb"
+  # Order history is per-user and enforced HERE, on the caller's own token —
+  # never by trusting a user id the agent passed in.
+  Catalogue__BaseUrl: "http://ak-catalogue:8080/"

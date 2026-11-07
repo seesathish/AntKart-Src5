@@ -1,0 +1,18 @@
+# AK.Catalogue — the product catalogue, and the retrieval surface behind
+# natural-language product search.
+#
+# Two distinct reads live here, and keeping them distinct matters: an exact
+# lookup by id goes to the relational store, while "something warm for a winter
+# trip" goes through retrieval over product specifications. An agent that cannot
+# tell the two apart either hallucinates ids or runs a vector search to answer
+# "show me order 412".
+name: ak-catalogue
+serviceName: catalogue
+env:
+  ConnectionStrings__CatalogueDb__SecretName: "ConnectionStrings--CatalogueDb"
+  # Azure AI Search. The endpoint is not a secret; access is by workload identity
+  # (Search Index Data Reader), so there is no admin key anywhere.
+  # NOTE: the ai-search unit does not exist yet — this is the key the service will
+  # read, left here so the configuration shape is settled before the resource is.
+  Search__Endpoint: ""
+  Search__ProductIndexName: "idx-products"

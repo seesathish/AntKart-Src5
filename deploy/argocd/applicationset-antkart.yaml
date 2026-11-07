@@ -1,0 +1,161 @@
+# =============================================================================
+# ApplicationSet: antkart-services
+# =============================================================================
+# Templates one Argo CD Application per workload from the `elements` list below.
+# All seven instantiate the SAME chart (deploy/helm/antkart-service) with a
+# different per-service values file. Adding or removing a workload is a one-line
+# list edit.
+#
+# This is the ONLY delivery path in this repository. The earlier platform also
+# carried a parallel set of standalone Application manifests as a teaching
+# contrast, and that turned out to be a trap: both paths create the same
+# Application names, so applying one after the other silently reverted the
+# other's parameters. One path, one source of truth.
+#
+# THIS OBJECT IS WHAT BINDS THE SERVICES TO AN ENVIRONMENT. The values files
+# describe each workload's shape and are portable; the tenant- and
+# subscription-specific identifiers are passed from here as Helm parameters. To
+# stand up a second environment, copy this file, change the parameters, and point
+# it at that environment's identities.
+#
+# ARGO CD DOES NOT WATCH THIS FILE. It reconciles the Applications this generates
+# but not the ApplicationSet itself, so an edit here has to be applied with
+# kubectl. Changing an element and waiting for a sync that never comes is the
+# second-most convincing wrong-but-green state in GitOps, after a ConfigMap
+# change that does not roll its pods.
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: antkart-services
+  namespace: argocd
+spec:
+  goTemplate: true
+  generators:
+    - list:
+        elements:
+          # ------------------------------------------------------------------
+          # workloadIdentityClientId: the client id of the user-assigned managed
+          # identity federated to this service's ServiceAccount. EMPTY until the
+          # workload-identity unit has been applied — the chart's `required` will
+          # fail the render rather than deploy a pod that starts cleanly and then
+          # cannot authenticate to Azure. Fill from:
+          #
+          #   cd infrastructure/environments/dev/workload-identity
+          #   terragrunt output -json identities
+          #
+          # Each entry is { client_id, principal_id, identity_name }; client_id is
+          # the one that goes below.
+          #
+          # then `kubectl apply -f` this file again.
+          # ------------------------------------------------------------------
+          - name: ak-users
+            valueFile: users.yaml
+            clientId: ""
+            ingressEnabled: "false"
+            ingressHost: ""
+          - name: ak-catalogue
+            valueFile: catalogue.yaml
+            clientId: ""
+            ingressEnabled: "false"
+            ingressHost: ""
+          - name: ak-cart
+            valueFile: cart.yaml
+            clientId: ""
+            ingressEnabled: "false"
+            ingressHost: ""
+          - name: ak-orders
+            valueFile: orders.yaml
+            clientId: ""
+            ingressEnabled: "false"
+            ingressHost: ""
+          # The typed-tool boundary the agents call through (D2). ClusterIP.
+          - name: ak-mcp
+            valueFile: mcp.yaml
+            clientId: ""
+            ingressEnabled: "false"
+            ingressHost: ""
+          # The Python supervisor and its four specialist agents (D1, D4).
+          # ClusterIP with NO ingress, deliberately: an agent loop reachable from
+          # the internet without passing the gateway's token validation would be
+          # an unauthenticated path into every tool the agents can call.
+          - name: ak-orchestrator
+            valueFile: orchestrator.yaml
+            clientId: ""
+            ingressEnabled: "false"
+            ingressHost: ""
+          # The gateway is the ONLY workload with an ingress. ingressHost is the
+          # external host; set it once DNS points at the ingress controller's
+          # LoadBalancer IP. Keep the TLS issuer in values/gateway.yaml — start on
+          # letsencrypt-staging and switch to prod only once issuance works.
+          - name: ak-gateway
+            valueFile: gateway.yaml
+            clientId: ""
+            ingressEnabled: "false"
+            ingressHost: ""
+  template:
+    metadata:
+      name: "{{ .name }}"
+      # Argo CD only reconciles Applications in its own namespace.
+      namespace: argocd
+      finalizers:
+        - resources-finalizer.argocd.argoproj.io
+    spec:
+      project: antkart
+      source:
+        repoURL: https://github.com/seesathish/AntKart-Src5.git
+        targetRevision: main
+        path: deploy/helm/antkart-service
+        helm:
+          # Resolved relative to `path` (the chart directory), so ../values/x.yaml
+          # is deploy/helm/values/x.yaml.
+          valueFiles:
+            - "../values/{{ .valueFile }}"
+          parameters:
+            - name: workloadIdentityClientId
+              value: "{{ .clientId }}"
+            - name: ingress.enabled
+              value: "{{ .ingressEnabled }}"
+            - name: ingress.host
+              value: "{{ .ingressHost }}"
+            # ----------------------------------------------------------------
+            # Entra token validation — identical for every workload, because
+            # every one of them validates the caller's token independently
+            # rather than trusting the hop in front of it (D5).
+            #
+            # These identify a specific directory. Fill them from:
+            #   cd infrastructure/environments/dev/app-registration
+            #   terragrunt output
+            # ----------------------------------------------------------------
+            - name: env.Entra__TenantId
+              value: ""
+            - name: env.Entra__Audience
+              value: ""
+            - name: env.Entra__ClientId
+              value: ""
+      destination:
+        server: https://kubernetes.default.svc
+        namespace: antkart
+      # ---------------------------------------------------------------------
+      # AUTO-SYNC. This is what the CD workflows depend on: a workflow bumps the
+      # image tag in Git and Argo CD rolls it out hands-free. Without it, CD
+      # would appear to succeed while nothing reached the cluster.
+      #
+      #   automated — sync whenever Git changes
+      #   selfHeal  — if the live cluster drifts from Git, revert it to Git. Note
+      #               what this implies: a `helm upgrade` or a `kubectl edit` is
+      #               undone. Git is the only way to change anything.
+      #   prune     — OFF. Pruning DELETES resources removed from Git. It is the
+      #               only destructive automation here, so it stays off: a stray
+      #               Git deletion cannot cascade into the cluster.
+      # ---------------------------------------------------------------------
+      syncPolicy:
+        automated:
+          selfHeal: true
+          prune: false
+        syncOptions:
+          # The antkart namespace is created with the cluster bootstrap, not by
+          # Argo — so do not let Argo try to create or own it.
+          - CreateNamespace=false
+          # Adopt pre-existing resources via server-side apply instead of failing
+          # on "already exists".
+          - ServerSideApply=true

@@ -1,0 +1,44 @@
+# =============================================================================
+# Gateway CI
+# =============================================================================
+# A thin caller. All the logic lives in _dotnet-ci.yml — see that file for why.
+#
+# GATEWAY SPECIFICS:
+# No test project: the gateway is a thin Ocelot host whose behaviour IS its
+# routing configuration, which is exercised at the platform level rather than by
+# a unit suite. build-test therefore compiles only, and sonar runs without a
+# coverage report.
+
+name: Gateway CI
+
+on:
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'AK.Gateway/**'
+      - 'AK.BuildingBlocks/**'
+      - 'nuget.config'
+      - '.github/workflows/gateway-ci.yml'
+      - '.github/workflows/_dotnet-ci.yml'
+      # Documentation-only changes do not trigger the gate. The negation must be
+      # LAST — in GitHub Actions path filters, later patterns win.
+      - '!**/*.md'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gateway-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ci:
+    uses: ./.github/workflows/_dotnet-ci.yml
+    with:
+      service_name: gateway
+      service_path: AK.Gateway
+      project: AK.Gateway/AK.Gateway.API/AK.Gateway.API.csproj
+      test_project: ''
+      dockerfile: AK.Gateway/AK.Gateway.API/Dockerfile
+    secrets:
+      SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}

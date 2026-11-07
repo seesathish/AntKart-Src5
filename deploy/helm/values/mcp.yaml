@@ -1,0 +1,22 @@
+# AK.Mcp — the .NET MCP server: the typed-tool boundary between the Python agents
+# and the .NET services (D2).
+#
+# Why a boundary at all, rather than agents calling the services directly: a tool
+# schema is a CONTRACT the model is held to. An agent that invents a field or a
+# value gets rejected by schema validation before any service is touched — which
+# is the fourth negative case (D10), and it is only possible because there is a
+# typed surface to reject against.
+#
+# It propagates the CALLER's token onward (D5). The MCP server has an identity of
+# its own for reading its configuration, but it never uses that identity to reach
+# a service on a user's behalf — if it did, every tool call would run with the
+# server's permissions instead of the user's, and the cross-user case would pass.
+name: ak-mcp
+serviceName: mcp
+env:
+  # In-cluster service addresses. Plain HTTP inside the cluster; TLS terminates
+  # at the ingress, and these never leave it.
+  Services__Catalogue: "http://ak-catalogue:8080/"
+  Services__Cart: "http://ak-cart:8080/"
+  Services__Orders: "http://ak-orders:8080/"
+  Services__Users: "http://ak-users:8080/"

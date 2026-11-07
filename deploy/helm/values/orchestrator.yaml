@@ -1,0 +1,47 @@
+# AK.Orchestrator — the Python supervisor and its four specialist agents (D1, D4).
+#
+# A Python workload deployed by the same chart as the .NET ones. It is here, not
+# in a separate stack, because the point of this reference is that adopting
+# multi-agent orchestration does NOT mean standing up a parallel platform: it is
+# one more Deployment that honours the same health, identity and config contracts.
+#
+# ClusterIP, with no ingress. It is reached only through the gateway, so every
+# request that enters the agent loop has already had its token validated.
+name: ak-orchestrator
+serviceName: orchestrator
+
+# The agent loop holds conversation state, retrieved documents and tool schemas
+# in memory, and the Python runtime is less frugal than .NET about it. A single
+# bounded agent run is comfortable here; the step cap and token budget (D7) are
+# what stop it growing without limit.
+resources:
+  requests:
+    cpu: 200m
+    memory: 512Mi
+  limits:
+    cpu: 1000m
+    memory: 1Gi
+
+env:
+  # The MCP server is the ONLY way the agents reach the .NET services. There is
+  # deliberately no direct service address here: an agent with one would bypass
+  # the typed-tool contract and the schema validation that depends on it.
+  Mcp__Endpoint: "http://ak-mcp:8080/"
+
+  # Azure OpenAI. The endpoint is not a secret; access is by workload identity
+  # (Cognitive Services OpenAI User), so no API key is stored.
+  # NOTE: the openai unit does not exist yet, and the deployment name depends on
+  # which models the access request grants.
+  AzureOpenAI__Endpoint: ""
+  AzureOpenAI__ChatDeployment: "gpt-4o-mini"
+
+  # Retrieval over the policy corpus, for the Support agent.
+  Search__Endpoint: ""
+  Search__PolicyIndexName: "idx-policies"
+
+  # Bounded autonomy (D7). These are configuration, not constants, because the
+  # right ceiling is found by watching real runs — but they are never absent. An
+  # agent loop without a step cap is a billing incident waiting for a bad prompt.
+  Agent__MaxSteps: "12"
+  Agent__MaxTokensPerRun: "20000"
+  Agent__MaxHandoffDepth: "3"

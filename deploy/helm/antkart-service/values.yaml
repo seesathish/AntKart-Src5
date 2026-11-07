@@ -1,0 +1,151 @@
+# =============================================================================
+# antkart-service — default values
+# =============================================================================
+# Defaults shared by every workload. A per-service file (values/<service>.yaml)
+# supplies what is service-specific: name, serviceName, the workload identity's
+# client id, and any extra env. Helm deep-merges the per-service `env` map on
+# top of the defaults below.
+#
+# ONE CHART, TWO RUNTIMES. The five .NET services, the .NET MCP server and the
+# Python orchestrator are all deployed by this chart. Nothing in it knows what
+# language is inside the container — the only contract is: listen on
+# containerPort, and serve /health/live and /health/ready. That is deliberate.
+# A separate chart per runtime would duplicate the identity, probe and config
+# wiring, and the two copies would drift.
+
+# name        — the in-cluster identity: the ServiceAccount, Deployment and
+#               Service are all named this (the ak-<service> convention).
+#               REQUIRED per service. It must match the federated identity
+#               credential's subject exactly — see the warning below.
+# serviceName — the short name; the container name and the ACR image path
+#               (antkart/<serviceName>) derive from it. REQUIRED per service.
+name: ""
+serviceName: ""
+
+namespace: antkart
+
+replicaCount: 1
+
+# ---------------------------------------------------------------------------
+# WORKLOAD IDENTITY — the client id of the user-assigned managed identity
+# federated to this service, annotated onto the ServiceAccount.
+#
+# DELIBERATELY EMPTY IN GIT. These are tenant-specific GUIDs: committing them
+# puts real identifiers from a real directory into a repository meant to be
+# published, and ties the values files to one subscription. The chart's
+# `required` on this value means a missing id fails the render loudly rather
+# than deploying a pod that starts fine and then cannot authenticate to Azure —
+# which presents as an opaque credential error with no mention of naming.
+#
+# Fill them in after `terragrunt apply` of the workload-identity unit:
+#
+#   terragrunt output -json identities        # each entry carries a client_id
+#
+# then pass each as a Helm parameter from the Argo CD ApplicationSet, or set it
+# locally for a manual `helm upgrade`. See deploy/README.md.
+# ---------------------------------------------------------------------------
+workloadIdentityClientId: ""
+
+image:
+  registry: acrantkartaidev.azurecr.io
+  # The image path is <registry>/antkart/<name>, where <name> is image.name when
+  # set and otherwise falls back to serviceName.
+  #
+  # WHY image.name is separate from serviceName: serviceName drives the
+  # IN-CLUSTER identity — the ServiceAccount is named ak-<serviceName>, which
+  # must EXACTLY match the federated credential subject
+  # system:serviceaccount:antkart:ak-<serviceName>. Renaming serviceName to suit
+  # a registry repository would silently break workload identity. The image path
+  # by contrast must match whatever repository actually exists in ACR. They
+  # usually coincide; set image.name when they do not.
+  name: ""
+  tag: dev
+  pullPolicy: IfNotPresent
+
+containerPort: 8080
+
+service:
+  port: 8080
+  portName: http
+
+# Probe timings. Paths are fixed in the template (/health/live, /health/ready)
+# because they are the contract every workload in this platform implements.
+probes:
+  startup:
+    periodSeconds: 5
+    failureThreshold: 30   # up to ~150s to finish booting
+  liveness:
+    periodSeconds: 15
+    timeoutSeconds: 3
+    failureThreshold: 3
+  readiness:
+    periodSeconds: 10
+    timeoutSeconds: 3
+    failureThreshold: 3
+
+# Sized for 1 replica each of seven workloads on 2 x Standard_D2s_v3 (2 vCPU /
+# 8 GiB per node): requests 7 * 100m = 700m CPU and 7 * 192Mi = ~1.3Gi, well
+# within node allocatable, with limits that allow bursts without overcommitting.
+# The orchestrator raises its own memory request — see values/orchestrator.yaml.
+resources:
+  requests:
+    cpu: 100m
+    memory: 192Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+
+# Non-secret configuration, rendered into a ConfigMap and injected with envFrom.
+# .NET maps `__` to the `:` configuration separator (KeyVault__Uri -> KeyVault:Uri).
+#
+# NO SECRETS HERE. Connection strings and API keys are read from Key Vault at
+# runtime using the pod's workload identity. Every workload reads the vault, so
+# its URI is the one shared default; per-service files add what that service
+# actually reads.
+env:
+  KeyVault__Uri: "https://kv-antkartai-dev.vault.azure.net/"
+
+  # Entra token validation. These are SHARED defaults, not per-service, because
+  # every workload in this platform validates the caller's token independently
+  # rather than trusting the hop in front of it (D5) — so every one of them binds
+  # the same Entra section.
+  #
+  # TenantId, Audience and ClientId are EMPTY IN GIT. They identify a specific
+  # directory, and anyone adopting this repository has their own: a committed
+  # value would be both a leak and wrong for them. Fill them from the
+  # app-registration unit's outputs. Empty values fail at startup with a clear
+  # configuration error rather than accepting unvalidated tokens.
+  Entra__Instance: "https://login.microsoftonline.com"
+  Entra__TenantId: ""
+  Entra__Audience: ""
+  Entra__ClientId: ""
+
+# Gateway only: mount an ocelot.json routing file from a ConfigMap, so routing
+# changes need a values edit rather than an image rebuild.
+ocelot:
+  enabled: false
+  # config: <structured ocelot document> — see values/gateway.yaml
+
+# Ingress — disabled by default so no internal service ever renders one. Only
+# the gateway enables it: it is the single public entry point, and everything
+# else stays ClusterIP and is reached through it.
+#
+# The ORCHESTRATOR is ClusterIP too, and that matters. An agent loop reachable
+# from the internet without passing the gateway's token validation would be an
+# unauthenticated path into every tool the agents can call.
+ingress:
+  enabled: false
+  className: nginx
+  host: ""                             # set by the gateway's Argo CD Application
+  path: /
+  pathType: Prefix
+  clusterIssuer: letsencrypt-staging   # start on STAGING; switch to prod once it issues
+  tlsSecretName: ""                    # defaults to <name>-tls
+  annotations: {}
+
+# Guard rails — the .NET images already run as the non-root $APP_UID (1654), and
+# the orchestrator image sets its own non-root user.
+podSecurityContext: {}
+securityContext:
+  runAsNonRoot: true
+  allowPrivilegeEscalation: false

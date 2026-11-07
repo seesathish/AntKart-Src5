@@ -1,0 +1,11 @@
+# AK.Cart — the shopping cart, backed by Redis and keyed per user with a TTL.
+#
+# This is where the agent writes FREELY. Cart operations are reversible: adding a
+# wrong item costs a removal, not an apology. That is exactly why the HITL gate
+# is NOT here (D6) — gating every reversible write would make the agent useless
+# and train the user to click through confirmations without reading them, which
+# is worse than having none.
+name: ak-cart
+serviceName: cart
+env:
+  ConnectionStrings__Redis__SecretName: "ConnectionStrings--Redis"

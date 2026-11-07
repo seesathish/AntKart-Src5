@@ -1,0 +1,176 @@
+# =============================================================================
+# Reusable: service CD — delivery on merge to main
+# =============================================================================
+# RUNTIME-AGNOSTIC, and worth noticing. There is nothing .NET-specific below: it
+# builds a Dockerfile, pushes the image, and bumps a tag in a values file. The
+# Python orchestrator uses this same workflow. The runtime boundary in this
+# platform is real at the source level and in CI — where the Python workload has
+# its own lint, type-check and test gate — and disappears entirely at delivery.
+# Builds an immutable, SHA-tagged image, pushes it to ACR with no stored
+# credential, and bumps the image tag in Git. It does NOT touch the cluster:
+# Argo CD sees the tag change and rolls it out. That separation is the whole
+# point of GitOps — the pipeline's last act is a commit, and the cluster's state
+# is whatever Git says it is.
+#
+# NO AZURE SECRET EXISTS. azure/login exchanges GitHub's own OIDC token for an
+# Azure one; Entra matches its issuer and subject against the federated
+# credential created by the github-oidc unit. The subject is exact-match, so only
+# a run on main can authenticate — a fork's pull request cannot.
+#
+# THE LOOP GUARD. This workflow commits to the repository it is triggered by, so
+# it could trigger itself. Three things prevent that, and the first is the one
+# doing the work:
+#   1. The caller's path filter excludes deploy/helm/values/** — the only path
+#      this workflow writes to. This is the real guard.
+#   2. CI is pull_request-only, so a push commit cannot start it.
+#   3. The commit message carries [skip ci].
+# The PAT is NOT a guard — it exists because a push made with GITHUB_TOKEN
+# deliberately does not trigger workflows, which would be a guard, but also
+# would not be visible as one. The path filter is explicit.
+
+on:
+  workflow_call:
+    inputs:
+      service_name:
+        description: 'Short service name (e.g. catalogue).'
+        required: true
+        type: string
+      image_repo:
+        description: 'ACR repository path (e.g. antkart/catalogue).'
+        required: true
+        type: string
+      dockerfile:
+        description: 'Dockerfile to build, with the repo root as build context.'
+        required: true
+        type: string
+      values_file:
+        description: 'The Helm values file whose .image.tag is bumped.'
+        required: true
+        type: string
+    secrets:
+      CD_PUSH_TOKEN:
+        required: true
+
+env:
+  ACR_NAME: acrantkartaidev
+  REGISTRY: acrantkartaidev.azurecr.io
+
+jobs:
+  build-and-push:
+    name: build-and-push
+    runs-on: ubuntu-latest
+    # Permissions are scoped PER JOB, not at workflow level: a workflow-level
+    # grant hands it to every job, including ones that have no business with it.
+    permissions:
+      id-token: write   # the OIDC token for azure/login — secret-less Azure auth
+      contents: read    # checkout only
+    outputs:
+      image_tag: ${{ steps.meta.outputs.tag }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      # The short commit SHA. An IMMUTABLE tag is the point: `latest` tells you
+      # nothing about what is running, and a redeployed `latest` cannot be rolled
+      # back to a known state.
+      - name: Compute image tag
+        id: meta
+        run: echo "tag=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+
+      - name: Azure login (OIDC)
+        uses: azure/login@532459ea530d8321f2fb9bb10d1e0bcf23869a43 # v3.0.0
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: ACR login
+        run: az acr login --name "$ACR_NAME"
+
+      - name: Build image
+        env:
+          TAG: ${{ steps.meta.outputs.tag }}
+        run: |
+          docker build \
+            -f "${{ inputs.dockerfile }}" \
+            -t "$REGISTRY/${{ inputs.image_repo }}:$TAG" \
+            -t "$REGISTRY/${{ inputs.image_repo }}:latest" \
+            .
+
+      - name: Push image
+        env:
+          TAG: ${{ steps.meta.outputs.tag }}
+        run: |
+          docker push "$REGISTRY/${{ inputs.image_repo }}:$TAG"
+          docker push "$REGISTRY/${{ inputs.image_repo }}:latest"
+
+  update-gitops:
+    name: update-gitops
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read    # the push uses CD_PUSH_TOKEN, not GITHUB_TOKEN
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: main
+          token: ${{ secrets.CD_PUSH_TOKEN }}
+          fetch-depth: 0
+
+      # Sets ONLY .image.tag. Everything else in the values file — the gateway's
+      # ingress and Ocelot routes, the orchestrator's autonomy limits — is left
+      # exactly as it is. A yq assignment to one key is what makes a tag bump safe
+      # to automate; a template re-render would not be.
+      - name: Bump image tag in values
+        env:
+          TAG: ${{ needs.build-and-push.outputs.image_tag }}
+        run: |
+          yq -i '.image.tag = strenv(TAG)' "${{ inputs.values_file }}"
+          echo "----- updated ${{ inputs.values_file }} -----"
+          yq '.image' "${{ inputs.values_file }}"
+
+      - name: Commit and push tag bump
+        env:
+          TAG: ${{ needs.build-and-push.outputs.image_tag }}
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "${{ inputs.values_file }}"
+          if git diff --cached --quiet; then
+            echo "image tag already $TAG — nothing to commit"
+            exit 0
+          fi
+          git commit -m "chore(cd): ${{ inputs.service_name }} image -> $TAG [skip ci]"
+
+          # Several services merging at once all try to push to main. Rebase and
+          # retry rather than failing: the tag bumps touch different files, so
+          # they never actually conflict — they just race for the branch tip.
+          pushed=false
+          for attempt in 1 2 3 4 5; do
+            if git push origin HEAD:main; then
+              pushed=true
+              break
+            fi
+            echo "push rejected (attempt $attempt) — rebasing onto latest main"
+            git pull --rebase origin main
+          done
+
+          if [ "$pushed" != "true" ]; then
+            echo "::error::failed to push tag bump after 5 attempts" >&2
+            exit 1
+          fi
+
+      # Without this step a failed push could pass silently and the image would
+      # sit in ACR, never deployed, with a green pipeline above it.
+      - name: Verify the tag bump landed on main
+        env:
+          TAG: ${{ needs.build-and-push.outputs.image_tag }}
+        run: |
+          git fetch origin main
+          remote_tag=$(git show "FETCH_HEAD:${{ inputs.values_file }}" | yq '.image.tag')
+          echo "main ${{ inputs.values_file }} image.tag = $remote_tag (expected $TAG)"
+          if [ "$remote_tag" != "$TAG" ]; then
+            echo "::error::tag bump did not land on main ($remote_tag != $TAG)" >&2
+            exit 1
+          fi

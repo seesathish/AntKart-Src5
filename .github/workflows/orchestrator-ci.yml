@@ -1,0 +1,35 @@
+# =============================================================================
+# Orchestrator CI
+# =============================================================================
+# A thin caller. The logic lives in _python-ci.yml.
+#
+# ORCHESTRATOR SPECIFICS:
+# This is the Python half of the platform — the LangGraph supervisor and its four
+# specialist agents (D1, D4). Its gate is lint, format, type-check and test
+# rather than build-test/sonar/trivy, so its required status checks differ from
+# the .NET services' by design.
+
+name: Orchestrator CI
+
+on:
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'orchestrator/**'
+      - '.github/workflows/orchestrator-ci.yml'
+      - '.github/workflows/_python-ci.yml'
+      - '!**/*.md'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: orchestrator-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ci:
+    uses: ./.github/workflows/_python-ci.yml
+    with:
+      service_path: orchestrator
+      dockerfile: orchestrator/Dockerfile

@@ -7,13 +7,31 @@ obj/
 
 # IDE / editor
 .vs/
+.vscode/
 .idea/
+*.user
+*.suo
+
+# Test and coverage output
+TestResults/
+coverage/
+*.trx
 
 # Python
 __pycache__/
 .venv/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
 
 # Terraform / Terragrunt
+# NOTE: .terraform.lock.hcl is deliberately NOT ignored. It pins provider
+# versions per unit, and committing it is what makes a plan reproducible.
+#
+# The backend.tf / provider.tf / versions.tf that the root's `generate` blocks
+# write are NOT listed here on purpose. They are written inside
+# .terragrunt-cache/, which is already ignored — and a bare `versions.tf` entry
+# would match at any depth, silently ignoring a real one in modules/.
 .terraform/
 .terragrunt-cache/
 *.tfstate*

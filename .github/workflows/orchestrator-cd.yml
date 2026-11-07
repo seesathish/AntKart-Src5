@@ -1,0 +1,32 @@
+# =============================================================================
+# Orchestrator CD
+# =============================================================================
+# A thin caller — and it calls the SAME reusable workflow as the six .NET
+# services. There is nothing runtime-specific about building a Dockerfile,
+# pushing an image and bumping a tag, which is the practical shape of the claim
+# this reference makes: the Python agent runtime is delivered by the existing
+# pipeline, not by a parallel one.
+
+name: Orchestrator CD
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'orchestrator/**'
+      - '!**/*.md'
+
+concurrency:
+  group: orchestrator-cd
+  cancel-in-progress: false
+
+jobs:
+  cd:
+    uses: ./.github/workflows/_service-cd.yml
+    with:
+      service_name: orchestrator
+      image_repo: antkart/orchestrator
+      dockerfile: orchestrator/Dockerfile
+      values_file: deploy/helm/values/orchestrator.yaml
+    secrets:
+      CD_PUSH_TOKEN: ${{ secrets.CD_PUSH_TOKEN }}
