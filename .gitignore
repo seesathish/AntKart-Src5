@@ -1,0 +1,27 @@
+# Internal planning material — never pushed to the public copy
+docs/_internal/
+
+# .NET build output
+bin/
+obj/
+
+# IDE / editor
+.vs/
+.idea/
+
+# Python
+__pycache__/
+.venv/
+
+# Terraform / Terragrunt
+.terraform/
+.terragrunt-cache/
+*.tfstate*
+*.tfplan
+
+# Secrets / local config
+.env
+appsettings.*.Local.json
+
+# Node
+node_modules/
